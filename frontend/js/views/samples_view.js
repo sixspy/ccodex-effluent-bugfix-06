@@ -16,10 +16,12 @@ export const samplesViewTemplate = `
         <h3>批次详情</h3>
         <div class="kv">
           <span>指标</span><span>{{ fmtMetrics(sampleDetail.sample.metrics) }}</span>
+          <span>当前代</span><span>第 {{ sampleDetail.sample.generation }} 代（外送改判升代）</span>
           <span>挂起</span><span>{{ sampleDetail.exceed_holds.length }}</span>
           <span>准排</span><span>{{ sampleDetail.discharge_releases.length }}</span>
           <span>封批</span><span>{{ sampleDetail.discharge_seals.length }}</span>
         </div>
+        <p class="muted" style="margin-top:0.5rem">正式指标与空桩改判、对账页、血缘页同源；改判边见「血缘」页 edge_type=外送改判。</p>
       </div>
     </div>
     <div class="panel">

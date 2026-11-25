@@ -36,6 +36,49 @@ def reconcile_one(permit_code: str, authorization: AuthHeader = None):
         return _reconcile_permit(conn, permit_code)
 
 
+def refresh_reconcile_view(conn, sample_id: int) -> dict:
+    """BUGFIX-06 乙路径：在调用方事务内按改判后正式指标即时重算对账。
+
+    对账不另存副本，直接读 sample_batches 当前指标，因此与采样页同源；
+    本函数不自行 commit，改判事务提交后 GET /api/reconcile 看到的就是同一份新值。
+    """
+    sample = conn.execute(
+        "SELECT permit_ref, sample_code, metrics, flow_m3h, status, generation FROM sample_batches WHERE id=?",
+        (sample_id,),
+    ).fetchone()
+    if not sample:
+        return {"sample_id": sample_id, "matched": False, "reason": "采样不存在"}
+    permit = conn.execute(
+        "SELECT * FROM discharge_permits WHERE permit_code=?", (sample["permit_ref"],)
+    ).fetchone()
+    metrics = json.loads(sample["metrics"] or "{}")
+    if not permit:
+        return {
+            "sample_id": sample_id,
+            "permit_code": sample["permit_ref"],
+            "matched": False,
+            "metrics": metrics,
+            "reason": "许可不存在",
+        }
+    caps = {
+        "cod": permit["cod_cap"],
+        "nh3n": permit["nh3n_cap"],
+        "tp": permit["tp_cap"],
+    }
+    matched = validate_permit_match(
+        caps, metrics, float(sample["flow_m3h"]), float(permit["quota_m3d"])
+    )
+    return {
+        "sample_id": sample_id,
+        "sample_code": sample["sample_code"],
+        "permit_code": sample["permit_ref"],
+        "generation": sample["generation"],
+        "status": sample["status"],
+        "metrics": metrics,
+        "matched": matched,
+    }
+
+
 def _reconcile_permit(conn, permit_code: str) -> dict:
     permit = conn.execute(
         "SELECT * FROM discharge_permits WHERE permit_code=?", (permit_code,)

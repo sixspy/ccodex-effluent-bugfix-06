@@ -20,7 +20,6 @@ from validators import (
 
 router = APIRouter(tags=["samples"])
 
-
 def _next_sample_code(conn, outfall_id: int) -> str:
     outfall = conn.execute(
         "SELECT outfall_code FROM outfalls WHERE id=?", (outfall_id,)
@@ -191,3 +190,80 @@ def create_sample(body: SampleIn, authorization: AuthHeader = None):
         finally:
             release(conn, lock_key, user)
             conn.commit()
+
+
+def apply_rejudge_metrics(conn, sample, new_metrics: dict) -> dict:
+    """BUGFIX-06 甲路径：在调用方事务内改写正式指标并同事务重裁定。
+
+    必须与空桩回执、对账刷新、血缘改判边处于同一事务；本函数不自行 commit。
+    - 正式指标三项整体覆盖，generation 升代，记录新的 adjudicated_at；
+    - 按排放口限值重裁定：新值超标则重开/保留开放挂起，否则关闭全部挂起并回到已裁定。
+    """
+    sid = sample["id"]
+    outfall = conn.execute(
+        "SELECT cod_limit, nh3n_limit, tp_limit FROM outfalls WHERE id=?",
+        (sample["outfall_id"],),
+    ).fetchone()
+    validate_metrics_nonneg(new_metrics)
+    exceeded, metric, measured, limit = adjudicate_exceed(
+        new_metrics,
+        {
+            "cod": outfall["cod_limit"],
+            "nh3n": outfall["nh3n_limit"],
+            "tp": outfall["tp_limit"],
+        },
+    )
+    new_generation = int(sample["generation"]) + 1
+    if exceeded:
+        new_status = "旁路挂起"
+        adjudicated_at = None
+    else:
+        new_status = "已裁定"
+        adjudicated_at = now_iso()
+    conn.execute(
+        """UPDATE sample_batches
+           SET metrics=?, generation=?, status=?, adjudicated_at=?
+           WHERE id=?""",
+        (
+            json.dumps(new_metrics, ensure_ascii=False),
+            new_generation,
+            new_status,
+            adjudicated_at,
+            sid,
+        ),
+    )
+    # 重裁定超标页：先闭环旧挂起，新值超标再开一条改判挂起，保持五页同源
+    conn.execute(
+        """UPDATE exceed_holds SET status='已关闭', closed_at=COALESCE(closed_at,?),
+           note=note || ' | 外送改判重裁定'
+           WHERE sample_id=? AND status='开放'""",
+        (now_iso(), sid),
+    )
+    hold_key = None
+    if exceeded:
+        hold_key = f"EX-{sample['sample_code']}-{metric}-RJ{new_generation}"
+        conn.execute(
+            """INSERT INTO exceed_holds(sample_id,hold_key,exceed_metric,measured,
+               limit_value,status,opened_at,note)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                sid,
+                hold_key,
+                metric,
+                measured,
+                limit,
+                "开放",
+                now_iso(),
+                "外送改判重裁定挂起",
+            ),
+        )
+    return {
+        "sample_id": sid,
+        "sample_code": sample["sample_code"],
+        "metrics": new_metrics,
+        "generation": new_generation,
+        "status": new_status,
+        "exceeded": exceeded,
+        "hold_key": hold_key,
+        "summary": metric_summary(new_metrics),
+    }

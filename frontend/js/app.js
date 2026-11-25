@@ -65,6 +65,8 @@ createApp({
       from_sample_id: 1, to_sample_id: 2, edge_type: "复测续批", detail: "试验血缘",
     });
     const labForm = ref({ sample_code: "SM-OF-E1-A-001", courier_slot: "A1" });
+    const rejudgeForm = ref({ job_id: null, cod: 42, nh3n: 3.2, tp: 0.28, detail: "外送化验复检改判" });
+    const rejudgeResult = ref(null);
     const sludgeForm = ref({ plant_id: 1, digester_bay: "D-01" });
 
     function logout() {
@@ -196,6 +198,26 @@ createApp({
         mode: "dry_run",
       }));
     }
+    async function rejudgeLab() {
+      const f = rejudgeForm.value;
+      if (f.job_id == null || [f.cod, f.nh3n, f.tp].some((v) => v === null || Number.isNaN(v))) {
+        actionErr.value = "改判必须带空桩任务 ID 与 COD/氨氮/总磷三项正式指标";
+        return;
+      }
+      actionErr.value = "";
+      actionOk.value = "";
+      try {
+        const data = await api.labRejudge(f.job_id, {
+          detail: f.detail || "外送化验改判已回",
+          metrics: { cod: f.cod, nh3n: f.nh3n, tp: f.tp },
+        });
+        rejudgeResult.value = data;
+        actionOk.value = "改判已同事务双写：指标、对账、血缘、超标页同源刷新";
+        await refresh();
+      } catch (e) {
+        actionErr.value = e.message || String(e);
+      }
+    }
     async function enqueueSludge() {
       await flash(() => api.sludgeEnqueue({
         plant_id: sludgeForm.value.plant_id,
@@ -223,10 +245,11 @@ createApp({
       reconOne, reconAllItems, proofOne, reconCode, proofCode,
       plantForm, outfallForm, sampleForm, releaseForm, sealForm, permitForm,
       lineageForm, labForm, sludgeForm, releasableSamples, sealableSamples,
+      rejudgeForm, rejudgeResult,
       login, logout, refresh, statusClass, sampleClass, fmtMetrics,
       loadPlant, loadSample, createPlant, createOutfall, createSample,
       closeExceed, createRelease, createSeal, createPermit, createLineage,
-      loadReconcile, loadReconcileOne, loadProof, enqueueLab, enqueueSludge,
+      loadReconcile, loadReconcileOne, loadProof, enqueueLab, rejudgeLab, enqueueSludge,
     };
   },
   template: `

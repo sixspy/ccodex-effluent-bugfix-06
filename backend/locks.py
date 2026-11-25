@@ -27,6 +27,32 @@ def require_lock(conn, lock_key: str, holder: str) -> None:
         )
 
 
+def acquire_sample_lock_tx(conn, sample_id: int, holder: str) -> str:
+    """在已开启的写事务内抢采样锁，返回 lock_key。
+
+    供改判等"同事务双写"写口使用：事务由调用方以 BEGIN IMMEDIATE 开启，
+    本函数只做行级判定，不自行提交。持有人可重入；败方记争用痕后抛 409，
+    由调用方在同事务内提交争用痕并回滚其余写口。
+    """
+    lock_key = f"sample:{sample_id}"
+    row = conn.execute(
+        "SELECT holder FROM effluent_locks WHERE lock_key=?", (lock_key,)
+    ).fetchone()
+    if row and row["holder"] != holder:
+        conn.execute(
+            """INSERT INTO contention_log(lock_key,actor,action,detail,created_at)
+               VALUES (?,?,?,?,?)""",
+            (lock_key, holder, "争用失败", f"持有人={row['holder']}", now_iso()),
+        )
+        raise HTTPException(409, f"锁被占用：{lock_key} 持有人 {row['holder']}")
+    if not row:
+        conn.execute(
+            "INSERT INTO effluent_locks(lock_key,holder,acquired_at) VALUES (?,?,?)",
+            (lock_key, holder, now_iso()),
+        )
+    return lock_key
+
+
 def release(conn, lock_key: str, holder: str) -> None:
     conn.execute(
         "DELETE FROM effluent_locks WHERE lock_key=? AND holder=?",

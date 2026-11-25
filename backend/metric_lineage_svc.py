@@ -59,3 +59,23 @@ def create_edge(body: LineageIn, authorization: AuthHeader = None):
         )
         conn.commit()
         return {"id": cur.lastrowid, **body.model_dump()}
+
+
+def record_rejudge_edge(conn, sample_id: int, old_metrics: dict, new_metrics: dict) -> int:
+    """BUGFIX-06：在调用方事务内登记"外送改判"血缘边（自环，to_sample_id 留空）。
+
+    改判边使血缘页可追溯该采样指标从旧值到新值的改判来源，与指标双写同事务。
+    """
+    sample = conn.execute(
+        "SELECT sample_code FROM sample_batches WHERE id=?", (sample_id,)
+    ).fetchone()
+    code = sample["sample_code"] if sample else str(sample_id)
+    detail = (
+        f"{code} 外送化验改判：{old_metrics} -> {new_metrics}"
+    )
+    cur = conn.execute(
+        """INSERT INTO metric_lineage(from_sample_id,to_sample_id,edge_type,detail,created_at)
+           VALUES (?,?,?,?,?)""",
+        (sample_id, None, "外送改判", detail, now_iso()),
+    )
+    return cur.lastrowid
